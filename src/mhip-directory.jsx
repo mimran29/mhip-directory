@@ -734,7 +734,6 @@ export default function MhipDirectory() {
               ← Back to directory
             </button>
             <article className="mh-detail" key={company.id}>
-              <div className="mh-watermark">{company.lot ?? company.site}</div>
               {company.logo ? (
                     <img
                       className="mh-watermark-logo"
