@@ -1,5 +1,5 @@
-import MhipDirectory from "./mhip-directory";
+import HimaHalal from "./HimaHalal";
 
 export default function App() {
-  return <MhipDirectory />;
+  return <HimaHalal />;
 }
