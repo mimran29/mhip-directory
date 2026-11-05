@@ -6,61 +6,96 @@ const ALL_EXPORTS = new Set(COMPANIES.flatMap((c) => c.exports));
 const OLDEST = Math.min(...COMPANIES.map((c) => Number(c.founded)));
 
 const waLink = (num) => (num ? "https://wa.me/6" + num.replace(/[^0-9]/g, "") : null);
-const careersEmail = (c) => c.careersEmail || c.contact.email;
 const coverPhoto = (c) => (c.gallery.find((g) => g.label === "Factory") || c.gallery[0])?.src;
 
 // ─────────────────────────────────────────────────────────────
-// Job application form — opens the applicant's email app with a
-// ready-to-send message addressed to the chosen company.
+// Job application form — uploads the resume and sends the whole
+// application to the chosen company via /api/apply (api/apply.js).
 // ─────────────────────────────────────────────────────────────
-function ApplyForm({ lockedCompanyId }) {
-  const [form, setForm] = useState({
-    company: lockedCompanyId || "",
-    position: "",
-    name: "",
-    email: "",
-    phone: "",
-    experience: "",
-    cvLink: "",
-    message: "",
+const MAX_RESUME_MB = 3;
+const RESUME_TYPES = [".pdf", ".doc", ".docx"];
+
+const readAsBase64 = (file) =>
+  new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1]);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
   });
-  const [sentTo, setSentTo] = useState(null);
+
+function ApplyForm({ lockedCompanyId }) {
+  const empty = { company: lockedCompanyId || "", position: "", name: "", email: "", phone: "", experience: "", message: "", website: "" };
+  const [form, setForm] = useState(empty);
+  const [file, setFile] = useState(null);
+  const [fileKey, setFileKey] = useState(0);
+  const [status, setStatus] = useState({ state: "idle" });
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
 
-  const submit = (e) => {
+  const pickFile = (e) => {
+    const f = e.target.files?.[0] || null;
+    setStatus({ state: "idle" });
+    if (!f) return setFile(null);
+    const ext = "." + f.name.split(".").pop().toLowerCase();
+    if (!RESUME_TYPES.includes(ext)) {
+      setStatus({ state: "error", msg: "Please choose a PDF or Word (.doc, .docx) file." });
+      e.target.value = "";
+      return setFile(null);
+    }
+    if (f.size > MAX_RESUME_MB * 1024 * 1024) {
+      setStatus({ state: "error", msg: `Your resume is ${(f.size / 1048576).toFixed(1)} MB. Please upload a file of ${MAX_RESUME_MB} MB or less.` });
+      e.target.value = "";
+      return setFile(null);
+    }
+    setFile(f);
+  };
+
+  const submit = async (e) => {
     e.preventDefault();
     const company = COMPANIES.find((c) => c.id === (lockedCompanyId || form.company));
     if (!company) return;
-    const to = careersEmail(company);
-    const subject = `Job Application: ${form.position} — ${form.name}`;
-    const body = [
-      `Dear ${company.legalName} Hiring Team,`,
-      "",
-      `I would like to apply for the position of ${form.position}.`,
-      "",
-      `Full name: ${form.name}`,
-      `Email: ${form.email}`,
-      `Phone: ${form.phone}`,
-      form.experience && `Experience: ${form.experience}`,
-      form.cvLink && `CV / Resume link: ${form.cvLink}`,
-      "",
-      form.message,
-      "",
-      "Thank you for your time and consideration.",
-      "",
-      form.name,
-      "",
-      "— Sent via HIMAHALAL",
-    ]
-      .filter((l) => l !== false && l !== undefined && l !== null)
-      .join("\n");
-    window.location.href = `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-    setSentTo(company);
+    if (!file) return setStatus({ state: "error", msg: "Please upload your resume." });
+    setStatus({ state: "sending" });
+    try {
+      const data = await readAsBase64(file);
+      const res = await fetch("/api/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...form, companyId: company.id, resume: { name: file.name, data } }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(out.error || "Something went wrong. Please try again.");
+      setStatus({ state: "sent", company });
+      setForm(empty);
+      setFile(null);
+      setFileKey((k) => k + 1);
+    } catch (err) {
+      setStatus({
+        state: "error",
+        msg: err.message === "Failed to fetch" ? "Couldn't reach the server. Check your connection and try again." : err.message,
+      });
+    }
   };
+
+  if (status.state === "sent") {
+    return (
+      <div className="hh-form hh-done" role="status">
+        <div className="tick">✓</div>
+        <h3>Application sent!</h3>
+        <p>
+          Your application and resume were sent to <strong>{status.company.name}</strong>. They'll contact you by
+          email or phone if you're shortlisted.
+        </p>
+        <button type="button" className="hh-btn solid" onClick={() => setStatus({ state: "idle" })}>
+          Apply for another position
+        </button>
+      </div>
+    );
+  }
 
   return (
     <form className="hh-form" onSubmit={submit}>
+      <input type="text" name="website" value={form.website} onChange={set("website")} className="hh-hp" tabIndex={-1} autoComplete="off" aria-hidden="true" />
       {!lockedCompanyId && (
         <label className="full">
           <span>Company *</span>
@@ -99,23 +134,30 @@ function ApplyForm({ lockedCompanyId }) {
         </select>
       </label>
       <label className="full">
-        <span>CV / resume link (Google Drive, LinkedIn…)</span>
-        <input type="url" value={form.cvLink} onChange={set("cvLink")} placeholder="https://" />
+        <span>Resume / CV * <em>(PDF or Word, max {MAX_RESUME_MB} MB)</em></span>
+        <div className={`hh-file ${file ? "has" : ""}`}>
+          <input key={fileKey} type="file" accept={RESUME_TYPES.join(",")} onChange={pickFile} />
+          <span className="icon">📄</span>
+          <span className="txt">
+            {file ? (
+              <><strong>{file.name}</strong> · {file.size < 1048576 ? `${Math.max(1, Math.round(file.size / 1024))} KB` : `${(file.size / 1048576).toFixed(1)} MB`} — click to change</>
+            ) : (
+              <><strong>Click to upload</strong> or drag your resume here</>
+            )}
+          </span>
+        </div>
       </label>
       <label className="full">
         <span>Tell them about yourself</span>
         <textarea rows={4} value={form.message} onChange={set("message")} placeholder="Your skills, availability, why you'd like to join…" />
       </label>
+      {status.state === "error" && <div className="full hh-err" role="alert">{status.msg}</div>}
       <div className="full hh-form-foot">
-        <button type="submit" className="hh-btn solid">Send application ✉</button>
-        <p className="hh-hint">Your email app will open with the application ready. Attach your CV before sending.</p>
+        <button type="submit" className="hh-btn solid" disabled={status.state === "sending"}>
+          {status.state === "sending" ? "Sending…" : "Submit application"}
+        </button>
+        <p className="hh-hint">Your application and resume go straight to the company's hiring team.</p>
       </div>
-      {sentTo && (
-        <div className="full hh-sent" role="status">
-          Application drafted to <strong>{sentTo.name}</strong> ({careersEmail(sentTo)}). If your email app didn't open,
-          email them directly at that address.
-        </div>
-      )}
     </form>
   );
 }
@@ -281,8 +323,8 @@ export default function HimaHalal() {
                 </p>
                 <ol className="hh-steps">
                   <li>Choose the company and the position you want.</li>
-                  <li>Fill in your details and a short introduction.</li>
-                  <li>Your email app opens addressed to the company — attach your CV and press send.</li>
+                  <li>Fill in your details and upload your resume.</li>
+                  <li>Submit — your application goes straight to the company's hiring team.</li>
                 </ol>
               </div>
               <ApplyForm />
@@ -382,7 +424,7 @@ export default function HimaHalal() {
             <div>
               <span className="hh-eyebrow light">Careers at {company.name}</span>
               <h2>Want to work here?</h2>
-              <p>Your application goes straight to {company.name} at <strong>{careersEmail(company)}</strong>.</p>
+              <p>Upload your resume and your application goes straight to the {company.name} hiring team.</p>
             </div>
             <ApplyForm lockedCompanyId={company.id} />
           </section>
@@ -545,7 +587,22 @@ html { scroll-behavior: smooth; }
 .hh-form input:focus, .hh-form select:focus, .hh-form textarea:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(20,83,45,.14); }
 .hh-form-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
 .hh-hint { font-size: 12.5px; color: var(--muted) !important; margin: 0 !important; flex: 1 1 200px; line-height: 1.5 !important; }
-.hh-sent { background: #EAF2EC; color: var(--green); border-radius: 12px; padding: 12px 14px; font-size: 14px; line-height: 1.5; }
+.hh-form label span em { font-style: normal; font-weight: 400; color: var(--muted); }
+.hh-form { position: relative; }
+.hh-form .hh-hp { position: absolute; left: 0; top: 0; width: 1px; height: 1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); opacity: 0; pointer-events: none; }
+.hh-file { position: relative; display: flex; align-items: center; gap: 12px; border: 2px dashed #D8D1C2; border-radius: 14px; padding: 16px; background: #FDFBF7; transition: border-color .15s ease, background .15s ease; }
+.hh-file:hover, .hh-file:focus-within { border-color: var(--green); background: #F3F8F4; }
+.hh-file.has { border-style: solid; border-color: var(--green); background: #EAF2EC; }
+.hh-file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
+.hh-file .icon { font-size: 22px; }
+.hh-file .txt { font-size: 14px !important; font-weight: 400 !important; color: var(--muted) !important; word-break: break-word; }
+.hh-file .txt strong { color: var(--green); }
+.hh-err { background: #FBEAE6; color: #8E2F1E; border-radius: 12px; padding: 12px 14px; font-size: 14px; line-height: 1.5; }
+.hh-btn:disabled { opacity: .6; cursor: progress; transform: none; }
+.hh-done { display: block; text-align: center; padding: 40px 28px; }
+.hh-done .tick { width: 56px; height: 56px; margin: 0 auto; border-radius: 50%; background: var(--green); color: #fff; font-size: 28px; display: grid; place-items: center; }
+.hh-done h3 { font-family: 'Fraunces', serif; font-size: 26px; margin: 16px 0 8px; }
+.hh-done p { color: #36413B !important; font-size: 15px !important; margin: 0 0 22px !important; line-height: 1.6; }
 
 /* detail */
 .hh-detail { padding-bottom: 40px; animation: hhRise .45s ease both; }
